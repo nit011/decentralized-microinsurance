@@ -1,77 +1,132 @@
-//PolicyContract handles policy creation, premium payment, policy claims, and payouts.
+//This contract demonstrates the implementation of policy creation, premium payment, claim submission, claim processing, and payout distribution. It also includes the integration with Chainlink Keepers to automate claim processing.
 
 // SPDX-License-Identifier: MIT
-
 pragma solidity ^0.8.18;
 
-contract PolicyContract {
+import "@chainlink/contracts/src/v0.8/ChainlinkClient.sol";
+import "@chainlink/contracts/src/v0.8/interfaces/KeeperCompatibleInterface.sol";
+
+contract AutomatedClaimsProcessing is ChainlinkClient, KeeperCompatibleInterface {
+    uint256 private policyCounter;
+    uint256 private claimCounter;
+    address private oracle;
+    bytes32 private jobId;
+    uint256 private fee;
+
     struct Policy {
-        address user;
+        address policyholder;
         uint256 premium;
-        uint256 coverage;
         uint256 expirationDate;
-        bool isClaimed;
         bool isActive;
     }
-
-
-    mapping(address => Policy) public policies;
-
-    event PolicyCreated(address indexed user, uint256 premium, uint256 coverage, uint256 expirationDate);
-    event PremiumPaid(address indexed user, uint256 premiumAmount);
-    event PolicyClaimed(address indexed user, uint256 claimAmount);
-    event Payout(address indexed user, uint256 payoutAmount);
-
-    modifier onlyActivePolicy(address _user) {
-        require(policies[_user].isActive, "Policy is not active");
-        _;
+    
+    struct Claim {
+        uint256 policyId;
+        address claimant;
+        uint256 amount;
+        bool isProcessed;
     }
 
-    modifier onlyUnclaimedPolicy(address _user) {
-        require(!policies[_user].isClaimed, "Policy has already been claimed");
-        _;
+    mapping(uint256 => Policy) private policies;
+    mapping(uint256 => Claim) private claims;
+
+    event PolicyRegistered(uint256 indexed policyId, address indexed policyholder);
+    event ClaimSubmitted(uint256 indexed claimId, uint256 indexed policyId, address indexed claimant);
+    event ClaimProcessed(uint256 indexed claimId, uint256 indexed policyId, address indexed claimant, uint256 amount);
+
+    constructor(address _oracle, string memory _jobId, uint256 _fee) {
+        setChainlinkOracle(_oracle);
+        jobId = stringToBytes32(_jobId);
+        fee = _fee;
     }
 
-    function createPolicy(uint256 _premium, uint256 _coverage, uint256 _expirationDate) external {
-        require(_premium > 0, "Premium amount must be greater than zero");
-        require(_expirationDate > block.timestamp, "Expiration date must be in the future");
-        require(!policies[msg.sender].isActive, "User already has an existing policy");
+    function registerPolicy(uint256 _expirationDate) external payable {
+        require(msg.value > 0, "Premium amount must be greater than 0");
 
-        Policy storage policy = policies[msg.sender];
-        policy.user = msg.sender;
-        policy.premium = _premium;
-        policy.coverage = _coverage;
-        policy.expirationDate = _expirationDate;
-        policy.isClaimed = false;
-        policy.isActive = true;
+        uint256 newPolicyId = policyCounter;
+        policies[newPolicyId] = Policy(msg.sender, msg.value, _expirationDate, true);
 
-        emit PolicyCreated(msg.sender, _premium, _coverage, _expirationDate);
+        emit PolicyRegistered(newPolicyId, msg.sender);
+
+        policyCounter++;
     }
 
-    function payPremium() external payable onlyActivePolicy(msg.sender) {
-        require(msg.value == policies[msg.sender].premium, "Incorrect premium amount");
+    function submitClaim(uint256 _policyId, uint256 _amount) external {
+        require(policies[_policyId].isActive, "Invalid policy ID");
+        require(msg.sender == policies[_policyId].policyholder, "Not the policyholder");
+        require(!claims[_policyId].isProcessed, "Claim has already been processed");
 
-        emit PremiumPaid(msg.sender, msg.value);
+        uint256 newClaimId = claimCounter;
+        claims[newClaimId] = Claim(_policyId, msg.sender, _amount, false);
+
+        emit ClaimSubmitted(newClaimId, _policyId, msg.sender);
+
+        claimCounter++;
     }
 
-    function claimPolicy() external onlyActivePolicy(msg.sender) onlyUnclaimedPolicy(msg.sender) {
-        require(policies[msg.sender].expirationDate < block.timestamp, "Policy has not expired yet");
+    function processClaim(uint256 _claimId) external {
+        require(claims[_claimId].isProcessed == false, "Claim has already been processed");
 
-        uint256 claimAmount = policies[msg.sender].coverage;
+        Claim memory claim = claims[_claimId];
 
-        policies[msg.sender].isClaimed = true;
+        // Implement our claim processing logic here
+        // we can use Chainlink oracles to fetch external data for claim verification, such as accident reports or weather data
 
-        emit PolicyClaimed(msg.sender, claimAmount);
+        // Placeholder action: Approve and process the claim by transferring the claim amount to the claimant
+        payable(claim.claimant).transfer(claim.amount);
+        claims[_claimId].isProcessed = true;
+
+        emit ClaimProcessed(_claimId, claim.policyId, claim.claimant, claim.amount);
     }
 
-    function payout(address payable _user, uint256 _amount) external onlyActivePolicy(_user) {
-        require(policies[_user].isClaimed, "Policy has not been claimed yet");
-        require(_amount <= policies[_user].coverage, "Payout amount exceeds coverage");
+    function checkUpkeep(bytes calldata /* checkData */) external override returns (bool upkeepNeeded, bytes memory /* performData */) {
+        // Implement your own logic to determine if upkeep is needed
+        //  we can check if there are any pending claims that need processing
 
-        policies[_user].isActive = false;
+        upkeepNeeded = false; // Set to true if upkeep is needed
+    }
 
-        _user.transfer(_amount);
+    function performUpkeep(bytes calldata /* performData */) external override {
+        // Implement our own logic for performing the automated claims processing
+        // we can iterate over the pending claims and process them
 
-        emit Payout(_user, _amount);
+        // Call processClaim() function for each pending claim
+        // Make sure to set claim.isProcessed to true after processing
+
+        
+         for (uint256 claimId = 0; claimId < claimCounter; claimId++) {
+            if (!claims[claimId].isProcessed) {
+                processClaim(claimId);
+            }
+        }
+    }
+
+    function cancelPolicy(uint256 _policyId) external {
+        require(policies[_policyId].isActive, "Invalid policy ID");
+        require(msg.sender == policies[_policyId].policyholder, "Not the policyholder");
+
+        policies[_policyId].isActive = false;
+    }
+
+    function withdrawFunds() external {
+        // Implement our own logic to withdraw contract funds, if necessary
+        //  we can restrict withdrawals to the contract owner
+
+        // Placeholder action: Transfer all contract funds to the contract owner
+        payable(msg.sender).transfer(address(this).balance);
+    }
+
+    // Helper function to convert string to bytes32
+    function stringToBytes32(string memory _source) internal pure returns (bytes32 result) {
+        bytes memory tempEmptyStringTest = bytes(_source);
+        if (tempEmptyStringTest.length == 0) {
+            return 0x0;
+        }
+
+        assembly {
+            result := mload(add(_source, 32))
+        }
     }
 }
+
+

@@ -19,107 +19,94 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.18;
 
-contract MicroinsuranceContract {
-    
+import "@chainlink/contracts/src/v0.8/ChainlinkClient.sol";
+import "@chainlink/contracts/src/v0.8/interfaces/KeeperCompatibleInterface.sol";
+
+contract AutomatedClaimsProcessing is ChainlinkClient, KeeperCompatibleInterface {
+    address private oracle;
+    bytes32 private jobId;
+    uint256 private fee;
+
     struct Policy {
         address policyholder;
         uint256 premium;
         uint256 expirationDate;
         bool isActive;
     }
-    
+
     struct Claim {
-        uint256 claimAmount;
-        bool isApproved;
-        bool isPaid;
+        uint256 policyId;
+        address claimant;
+        uint256 amount;
+        bool isProcessed;
     }
-    
+
     mapping(uint256 => Policy) private policies;
     mapping(uint256 => Claim) private claims;
-    uint256 private policyCounter;
-    uint256 private claimCounter;
-    
+
     event PolicyRegistered(uint256 indexed policyId, address indexed policyholder);
-    event ClaimSubmitted(uint256 indexed claimId, uint256 indexed policyId, uint256 claimAmount);
-    event ClaimApproved(uint256 indexed claimId);
-    event ClaimPaid(uint256 indexed claimId);
-    
-    modifier onlyActivePolicy(uint256 _policyId) {
-        require(policies[_policyId].isActive, "Policy is not active");
-        _;
+    event ClaimSubmitted(uint256 indexed claimId, uint256 indexed policyId, address indexed claimant);
+    event ClaimProcessed(uint256 indexed claimId, uint256 indexed policyId, address indexed claimant, uint256 amount);
+
+    constructor(address _oracle, bytes32 _jobId, uint256 _fee) {
+        setChainlinkOracle(_oracle);
+        jobId = _jobId;
+        fee = _fee;
     }
-    
-    modifier onlyPolicyholder(uint256 _policyId) {
-        require(policies[_policyId].policyholder == msg.sender, "Not the policyholder");
-        _;
-    }
-    
+
     function registerPolicy(uint256 _expirationDate) external payable {
         require(msg.value > 0, "Premium amount must be greater than 0");
-        
-        uint256 newPolicyId = policyCounter;
+
+        uint256 newPolicyId = policies.length;
         policies[newPolicyId] = Policy(msg.sender, msg.value, _expirationDate, true);
-        
+
         emit PolicyRegistered(newPolicyId, msg.sender);
-        
-        policyCounter++;
     }
-    
-    function calculatePremium(uint256 _policyId) external view returns (uint256) {
-        require(policies[_policyId].isActive, "Policy is not active");
-        return policies[_policyId].premium;
+
+    function submitClaim(uint256 _policyId, uint256 _amount) external {
+        require(policies[_policyId].isActive, "Invalid policy ID");
+        require(msg.sender == policies[_policyId].policyholder, "Not the policyholder");
+        require(!claims[_policyId].isProcessed, "Claim has already been processed");
+
+        uint256 newClaimId = claims.length;
+        claims[newClaimId] = Claim(_policyId, msg.sender, _amount, false);
+
+        emit ClaimSubmitted(newClaimId, _policyId, msg.sender);
     }
-    
-    function expirePolicy(uint256 _policyId) external onlyPolicyholder(_policyId) {
-        require(block.timestamp >= policies[_policyId].expirationDate, "Policy has not expired yet");
-        policies[_policyId].isActive = false;
-    }
-    
-    function submitClaim(uint256 _policyId, uint256 _claimAmount) external onlyActivePolicy(_policyId) {
-        require(_claimAmount > 0, "Claim amount must be greater than 0");
-        
-        uint256 newClaimId = claimCounter;
-        claims[newClaimId] = Claim(_claimAmount, false, false);
-        
-        emit ClaimSubmitted(newClaimId, _policyId, _claimAmount);
-        
-        claimCounter++;
-    }
-    
+
     function processClaim(uint256 _claimId) external {
-        require(!claims[_claimId].isApproved, "Claim has already been approved");
-        require(policies[_claimId].isActive, "Policy is not active");
-        
-        claims[_claimId].isApproved = true;
-        
-        emit ClaimApproved(_claimId);
+        require(claims[_claimId].isProcessed == false, "Claim has already been processed");
+
+        Claim memory claim = claims[_claimId];
+
+        // Implement our claim processing logic here
+
+        // Placeholder action: Approve and process the claim by transferring the claim amount to the claimant
+        payable(claim.claimant).transfer(claim.amount);
+        claims[_claimId].isProcessed = true;
+
+        emit ClaimProcessed(_claimId, claim.policyId, claim.claimant, claim.amount);
     }
-    
-    function distributePayout(uint256 _claimId) external onlyActivePolicy(_claimId) {
-        require(claims[_claimId].isApproved, "Claim has not been approved yet");
-        require(!claims[_claimId].isPaid, "Claim has already been paid");
-        
-        claims[_claimId].isPaid = true;
-        
-        payable(policies[_claimId].policyholder).transfer(claims[_claimId].claimAmount);
-        
-        emit ClaimPaid(_claimId);
+
+    function checkUpkeep(bytes calldata /* checkData */) external override returns (bool upkeepNeeded, bytes memory /* performData */) {
+        // Implement our own logic to determine if upkeep is needed
+        //  we can check if there are any pending claims that need processing
+
+        upkeepNeeded = false; // Set to true if upkeep is needed
     }
-    
-    function getPolicy(uint256 _policyId) external view returns (address, uint256, uint256, bool) {
-        return (
-            policies[_policyId].policyholder,
-            policies[_policyId].premium,
-            policies[_policyId].expirationDate,
-            policies[_policyId].isActive
-        );
-    }
-    
-    function getClaim(uint256 _claimId) external view returns (uint256, bool, bool) {
-        return (
-            claims[_claimId].claimAmount,
-            claims[_claimId].isApproved,
-            claims[_claimId].isPaid
-        );
+
+    function performUpkeep(bytes calldata /* performData */) external override {
+        // Implement our own logic for performing the automated claims processing
+        //  we can iterate over the pending claims and process them
+
+        // Call processClaim() function for each pending claim
+        // Make sure to set claim.isProcessed to true after processing
+
+        
+         for (uint256 claimId = 0; claimId < claims.length; claimId++) {
+            if (!claims[claimId].isProcessed) {
+                processClaim(claimId);
+            }
+         }
     }
 }

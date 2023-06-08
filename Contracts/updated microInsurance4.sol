@@ -17,74 +17,111 @@
 
 
 // SPDX-License-Identifier: MIT
+pragma solidity ^0.8.18;
 
-pragma solidity ^0.8.0;
+import "@chainlink/contracts/src/v0.8/ChainlinkClient.sol";
+import "@chainlink/contracts/src/v0.8/interfaces/KeeperCompatibleInterface.sol";
 
-contract MicroinsuranceContract {
-    
+contract AutomatedClaimsProcessing is ChainlinkClient, KeeperCompatibleInterface {
+    address private oracle;
+    bytes32 private jobId;
+    uint256 private fee;
+
     struct Policy {
         address policyholder;
         uint256 premium;
         uint256 expirationDate;
         bool isActive;
     }
-    
+
+    struct Claim {
+        uint256 policyId;
+        address claimant;
+        uint256 amount;
+        bool isProcessed;
+    }
+
     mapping(uint256 => Policy) private policies;
-    uint256 private policyCounter;
-    
+    mapping(uint256 => Claim) private claims;
+
     event PolicyRegistered(uint256 indexed policyId, address indexed policyholder);
-    event PolicyExpired(uint256 indexed policyId);
-    
-    modifier onlyActivePolicy(uint256 _policyId) {
-        require(policies[_policyId].isActive, "Policy is not active");
-        _;
+    event ClaimSubmitted(uint256 indexed claimId, uint256 indexed policyId, address indexed claimant);
+    event ClaimProcessed(uint256 indexed claimId, uint256 indexed policyId, address indexed claimant, uint256 amount);
+
+    constructor(address _oracle, bytes32 _jobId, uint256 _fee) {
+        setChainlinkOracle(_oracle);
+        jobId = _jobId;
+        fee = _fee;
     }
-    
-    modifier onlyPolicyholder(uint256 _policyId) {
-        require(policies[_policyId].policyholder == msg.sender, "Not the policyholder");
-        _;
-    }
-    
+
     function registerPolicy(uint256 _expirationDate) external payable {
         require(msg.value > 0, "Premium amount must be greater than 0");
-        
-        uint256 newPolicyId = policyCounter;
+
+        uint256 newPolicyId = policies.length;
         policies[newPolicyId] = Policy(msg.sender, msg.value, _expirationDate, true);
-        
+
         emit PolicyRegistered(newPolicyId, msg.sender);
-        
-        policyCounter++;
     }
-    
-    function verifyPolicyConditions(uint256 _policyId) internal view returns (bool) {
-        // Implement your custom policy conditions logic here
-        // Return true if the policy conditions are met, otherwise false
+
+    function submitClaim(uint256 _policyId, uint256 _amount) external {
+        require(policies[_policyId].isActive, "Invalid policy ID");
+        require(msg.sender == policies[_policyId].policyholder, "Not the policyholder");
+        require(!claims[_policyId].isProcessed, "Claim has already been processed");
+
+        uint256 newClaimId = claims.length;
+        claims[newClaimId] = Claim(_policyId, msg.sender, _amount, false);
+
+        emit ClaimSubmitted(newClaimId, _policyId, msg.sender);
+    }
+
+    function processClaim(uint256 _claimId) external {
+        require(claims[_claimId].isProcessed == false, "Claim has already been processed");
+
+        Claim memory claim = claims[_claimId];
+
+        // Implement our claim processing logic here
+        // we can use Chainlink oracles to fetch external data for claim verification
+
+        // Placeholder action: Approve and process the claim by transferring the claim amount to the claimant
+        payable(claim.claimant).transfer(claim.amount);
+        claims[_claimId].isProcessed = true;
+
+        emit ClaimProcessed(_claimId, claim.policyId, claim.claimant, claim.amount);
+    }
+
+    function checkUpkeep(bytes calldata /* checkData */) external override returns (bool upkeepNeeded, bytes memory /* performData */) {
+        // Implement our own logic to determine if upkeep is needed
+        // we can check if there are any pending claims that need processing
+
+        upkeepNeeded = false; // Set to true if upkeep is needed
+    }
+
+    function performUpkeep(bytes calldata /* performData */) external override {
+        // Implement our own logic for performing the automated claims processing
+        //we  can iterate over the pending claims and process them
+
+        // Call processClaim() function for each pending claim
+        // Make sure to set claim.isProcessed to true after processing
+
         
-        // Placeholder condition: Policy is valid if the expiration date is greater than the current block timestamp
-        if (policies[_policyId].expirationDate > block.timestamp) {
-            return true;
-        } else {
-            return false;
+         for (uint256 claimId = 0; claimId < claims.length; claimId++) {
+            if (!claims[claimId].isProcessed) {
+                processClaim(claimId);
+            }
+         }
+    }
+
+    function enforcePolicyConditions(uint256 _policyId) external {
+        require(policies[_policyId].isActive, "Invalid policy ID");
+
+        Policy memory policy = policies[_policyId];
+
+        // Implement our policy condition enforcement logic here
+        // we can perform checks on policy expiration, claim history, etc.
+
+        // Placeholder action: Expire the policy if the expiration date has passed
+        if (block.timestamp > policy.expirationDate) {
+            policies[_policyId].isActive = false;
         }
-    }
-    
-    function enforceContract(uint256 _policyId) external onlyActivePolicy(_policyId) onlyPolicyholder(_policyId) {
-        require(verifyPolicyConditions(_policyId), "Policy conditions are not met");
-        
-        // Implement your contract enforcement logic here
-        
-        // Placeholder action: Expire the policy
-        policies[_policyId].isActive = false;
-        
-        emit PolicyExpired(_policyId);
-    }
-    
-    function getPolicy(uint256 _policyId) external view returns (address, uint256, uint256, bool) {
-        return (
-            policies[_policyId].policyholder,
-            policies[_policyId].premium,
-            policies[_policyId].expirationDate,
-            policies[_policyId].isActive
-        );
     }
 }
